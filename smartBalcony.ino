@@ -437,6 +437,12 @@ void handleClientConnection() {
             client.println("<td>millis():</td>");
             client.println("<td>" + String(millis()) + "</td>");
             client.println("</tr>");
+            float tempUpMin;
+            tempUpMin = (float)(millis() / 1000.0) / 60.0;
+            client.println("<tr>");
+            client.println("<td>Up time (millis):</td><td>");
+            client.println(tempUpMin,1);
+            client.println("'</td></tr>");
             client.println("<tr>");
             client.println("<td>PIR_IN:</td>");
             client.println("<td>" + String(digitalRead(BUILTIN_LED)) + "</td>");
@@ -733,19 +739,12 @@ void serialPrintAll() {
 void ledBlinker(short blinks) {
   if ((millis() > lastLEDblinkTime + ledBlinkInterval) && blinks > 0) {
     pinMode(BUILTIN_LED, OUTPUT);
-    // for (int flashed=0; flashed<blinks; flashed++ ) {
-    //   delay(10);
-    //   digitalWrite(BUILTIN_LED, LOW);
-    //   delay(20);
-    //   digitalWrite(BUILTIN_LED, HIGH);
-    //   delay(40);
-    // }
 
     short flashed = 0;
     do {
       delay(10);
       digitalWrite(BUILTIN_LED, LOW);
-      delay(20);
+      delay(40);
       digitalWrite(BUILTIN_LED, HIGH);
       delay(40);
       flashed += 1;
