@@ -1,150 +1,176 @@
+
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
+#include "Wire.h"
+#include "BH1750.h"
+#include "Adafruit_SHT31.h"
 #include <DNSServer.h>
 #include <ESP8266WebServer.h>
 #include <WiFiManager.h>
 #include <NTPClient.h>
-#include "DHT.h"
 #include <ArduinoOTA.h>
-#include <ESP8266Ping.h>
 #include "secrets.h"
 
-#define DHT_IN D1
-#define PIR_IN D2
-#define ANLG_IN A0
-#define PCBLED D0 // 16 , LED_BUILTIN
-#define ESPLED D4 // 2
-#define WATER_RELAY D3
-#define WHITE_RELAY D5
-#define GREEN_RELAY D6
+// INPUTS
+//   PIR_IN      --> D4  (!! used as BUILTIN_LED too !!)
+//   BUTTONS     --> A0  (analog IN)
+//   I2C sensors
+//      SDA      --> D1
+//      SCL      --> D2
 
-#define DHTTYPE DHT11
+// OUTPUTS
+//   RELAY_W      --> D5  (RELAY green lamp)
+//   RELAY_G      --> D6  (RELAY white lamp)
+//   RELAY_WT     --> D7  (RELAY water valve)
+//   BUILTIN_LED  --> D4  (!! used as PIR_IN too !!)
+
+#define BTN_IN A0
+// #define BUILTIN_LED D4 (used for PIR_IN & BUILTIN_LED)
+
+#define RELAY_W D5
+#define RELAY_G D6
+#define RELAY_WT D7
 
 char defaultSSID[] = WIFI_DEFAULT_SSID;
 char defaultPASS[] = WIFI_DEFAULT_PASS;
 
 char apiKey[] = THINGSP_WR_APIKEY;
+char otaAuthPin[] = OTA_AUTH_PIN;
 
-// ~~~~ Constants and variables
 String httpHeader;
-String localIPaddress;
 String formatedTime;
+String macAddr;
+String wifiSSID;
+String wifiSignal;
+String localIPaddress;
 
-bool debuggingMode = true;
-bool pingResult = true;
 bool wifiAvailable = false;
-bool connectionLost = false;
+bool sht3xAvailable = false;
+bool bh1750Available = false;
 
-bool movementFlag;
+int analogValue;
 float humidity;
 float temperature;
-unsigned int luminosity;
+bool movementFlag;
+uint16_t luminosity;
 
+unsigned long lastAnalogTime = 0;
 unsigned long lastNTPtime = 0;
-unsigned long lastPingTime = 0;
-unsigned long connectionLostTime = 0;
 unsigned long lastUploadTime = 0;
-unsigned long lastPCBledTime = 0;
-unsigned long lastESPledTime = 0;
 unsigned long lastSensorsTime = 0;
+unsigned long lastWiFiLostTime = 0;
+unsigned long lastWiFiCheckTime = 0;
+unsigned long lastLEDblinkTime = 0;
 
-const int ntpInterval = 2000;             // 2 seconds
-const int pingInteval = 60000;            // 1 minute
-const int sensorsInterval = 15000;        // 15 seconds
-const long thingSpeakInterval = 300000;   // 5 minutes
+bool autoGreen = true;
+bool manualGreen = false;
+bool autoWhite = true;
+bool manualWhite = false;
+bool autoWater = true;
+bool manualWater = false;
 
-const char* thinkSpeakAPI = "api.thingspeak.com"; // "184.106.153.149" or api.thingspeak.com
+const int sensorsInterval = 15000;        //  15 seconds
+const int analogReadInterval = 250;       //  250 ms
+unsigned int ledBlinkInterval = 3000;     //  3 seconds
 
-// Network Time Protocol
-const long utcOffsetInSeconds = 7200; // 2H (7200) for winter time / 3H (10800) for summer time
+const int ntpInterval = 2000;             //  2 seconds
+const int connectionKeepAlive = 2000;     //  2 seconds
+const long thingSpeakInterval = 300000;   //  5 minutes
+
+const char* thinkSpeakAPI = "api.thingspeak.com";       // "184.106.153.149" or api.thingspeak.com
+
+const long utcOffsetSec = 7200;     // GR: 2H (7200) for winter time / 3H (10800) for summer time
 char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
 
-ESP8266WebServer server(80);
+
+WiFiServer server(80);
 WiFiClient client;
+WiFiClient clientThSp;
 
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
-DHT dht(DHT_IN, DHTTYPE);
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetSec);
+
+BH1750 lightMeter;
+Adafruit_SHT31 sht31 = Adafruit_SHT31();
+
 
 void setup() {
-  pinMode(DHT_IN, INPUT);
-  pinMode(PIR_IN, INPUT);
-  pinMode(ANLG_IN, INPUT);
-
-  pinMode(PCBLED, OUTPUT);
-  pinMode(ESPLED, OUTPUT);
-  pinMode(WATER_RELAY, OUTPUT);
-  pinMode(WHITE_RELAY, OUTPUT);
-  pinMode(GREEN_RELAY, OUTPUT);
-
-  digitalWrite(PCBLED, HIGH);
-  digitalWrite(ESPLED, HIGH);
-  digitalWrite(WATER_RELAY, LOW);
-  digitalWrite(WHITE_RELAY, LOW);
-  digitalWrite(GREEN_RELAY, LOW);
 
   Serial.begin(115200);
+  Serial.println();
+  delay(200);
+
+  Wire.begin();
+  // Wire.begin(I2C_SDA, I2C_SCL);
+  Serial.println();
+  delay(200);
+
+  if (! sht31.begin(0x44)) {                             // Alternative address: 0x45
+    Serial.println("[ERROR] initialising SHT31");
+  }
+  else {
+    sht3xAvailable = true;
+    Serial.println("[SUCCESS] SHT31 initialised");
+  }
+  delay(200);
+
+  // lightMeter.begin();
+  if (lightMeter.begin(BH1750::CONTINUOUS_LOW_RES_MODE)) {
+    bh1750Available = true;
+    Serial.println("[SUCCESS] BH1750 initialised");
+  }
+  else {
+    Serial.println("[ERROR] initialising BH1750");
+  }
+  Serial.println();
+  delay(200);
 
   WiFiManager wifiManager;
   //wifiManager.resetSettings();
-  wifiManager.setConfigPortalTimeout(180);  // 180 sec timeout for WiFi configuration
+  wifiManager.setConfigPortalTimeout(120);              // 2 min timeout for WiFi configuration
   wifiManager.autoConnect(defaultSSID, defaultPASS);
-
-  Serial.println("Connected to WiFi.");
-  Serial.print("IP: ");
-  localIPaddress = (WiFi.localIP()).toString();
-  Serial.println(localIPaddress);
-
-  server.on("/", handle_OnConnect);
-  server.on("/help", handle_OnConnectHelp);
-  server.onNotFound(handle_NotFound);
   
   server.begin();
-  Serial.println("HTTP server starter on port 80.");
+  Serial.println("[SUCCESS] HTTP server started on port 80");
+  delay(200);
 
   timeClient.begin();
+  Serial.println("[SUCCESS] NTP client started");
+  delay(200);
 
-  dht.begin();
-
-  // while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-  //   Serial.println("Connection Failed! Rebooting...");
-  //   delay(5000);
-  //   ESP.restart();
-  // }
-
-  // handle OTA updates
   handleOTA();
-  delay(100);
+  delay(200);
 
   if (WiFi.waitForConnectResult() != WL_CONNECTED) {
     wifiAvailable = false;
-    Serial.println("Failed to connect on WiFi network!");
-    Serial.println("Operating offline.");
+    Serial.println("[ERROR] connecting on WiFi - operating 'OFFLINE'");
   }
   else {
     wifiAvailable = true;
-    Serial.println("Connected to WiFi.");
-    Serial.print("IP: ");
     localIPaddress = (WiFi.localIP()).toString();
+    wifiSignal = String(WiFi.RSSI());
+    wifiSSID = String(WiFi.SSID());
+    macAddr = String(WiFi.macAddress());
+
+    Serial.print("[SUCCESS] Connected on WiFi: ");
+    Serial.println(wifiSSID);
+    Serial.print("Local IP address: ");
     Serial.println(localIPaddress);
   }
+  delay(200);
 
-  delay(5000);
-}
+  pinMode(BTN_IN, INPUT);
+  pinMode(BUILTIN_LED, INPUT);
 
-bool pingStatus() {
-  IPAddress ipThingSpeak (184, 106, 153, 149);
-  IPAddress ipGoogle (8, 8, 8, 8);
+  pinMode(RELAY_G, OUTPUT);
+  pinMode(RELAY_W, OUTPUT);
+  pinMode(RELAY_WT, OUTPUT);
+  // pinMode(BUILTIN_LED, OUTPUT);
 
-  bool pingRet;    
-  pingRet = Ping.ping(ipThingSpeak);
-
-  if (!pingRet) {
-      pingRet = Ping.ping(ipGoogle);
-  }
-
-  lastPingTime = millis();
-  return pingRet;
+  digitalWrite(RELAY_G, HIGH);
+  digitalWrite(RELAY_W, HIGH);
+  digitalWrite(RELAY_WT, HIGH);
+  // digitalWrite(BUILTIN_LED, HIGH);
 }
 
 void handleOTA() {
@@ -152,7 +178,7 @@ void handleOTA() {
   // ArduinoOTA.setPort(8266);
 
   // Hostname defaults to esp8266-[ChipID]
-  ArduinoOTA.setHostname("SmyESP-1");
+  ArduinoOTA.setHostname("SmartBalcony");
 
   ArduinoOTA.setPassword((const char *)otaAuthPin);
 
@@ -177,124 +203,498 @@ void handleOTA() {
 }
 
 void thingSpeakRequest() {
-  client.stop();
-  if (client.connect(thinkSpeakAPI,80)) {
+  clientThSp.stop();
+  if (clientThSp.connect(thinkSpeakAPI,80)) {
     String postStr = apiKey;
-    postStr +="&field1=";
-    postStr += String(temperature);
-    postStr +="&field2=";
-    postStr += String(humidity);
-    postStr +="&field3=";
-    postStr += String(luminosity);
-    postStr +="&field4=";
-    postStr += String(movementFlag);
+    if (temperature != NULL) {
+      postStr +="&field1=";
+      postStr += String(temperature);
+    }
+    if (humidity != NULL) {
+      postStr +="&field2=";
+      postStr += String(humidity);
+    }
+    if (luminosity != NULL) {
+      postStr +="&field3=";
+      postStr += String(luminosity);
+    }
+    if (movementFlag != NULL) {
+      postStr +="&field4=";
+      postStr += String(movementFlag);
+    }
     postStr += "\r\n\r\n";
 
-    client.print("POST /update HTTP/1.1\n");
-    client.print("Host: api.thingspeak.com\n");
-    client.print("Connection: close\n");
-    client.print("X-THINGSPEAKAPIKEY: " + (String)apiKey + "\n");
-    client.print("Content-Type: application/x-www-form-urlencoded\n");
-    client.print("Content-Length: ");
-    client.print(postStr.length());
-    client.print("\n\n");
-    client.print(postStr);
-    client.stop();
-    if (debuggingMode) { Serial.println("Data uploaded to thingspeak!"); }
+    clientThSp.print("POST /update HTTP/1.1\n");
+    clientThSp.print("Host: api.thingspeak.com\n");
+    clientThSp.print("Connection: close\n");
+    clientThSp.print("X-THINGSPEAKAPIKEY: " + (String)apiKey + "\n");
+    clientThSp.print("Content-Type: application/x-www-form-urlencoded\n");
+    clientThSp.print("Content-Length: ");
+    clientThSp.print(postStr.length());
+    clientThSp.print("\n\n");
+    clientThSp.print(postStr);
+    clientThSp.stop();
+    Serial.println("[SUCCESS] data uploaded to thingspeak");
 
     lastUploadTime = millis();
   }
   else {
-    if (debuggingMode) { Serial.println("ERROR: could not upload data to thingspeak!"); }
+    Serial.println("[ERROR] could not connect to thingspeak");
   }
 }
 
-// Handle HTML page calls
-void handle_OnConnect() {
-  digitalWrite(ESPLED, LOW);
-  getSensorData();
-  server.send(200, "text/html", HTMLpresentData());
-  digitalWrite(ESPLED, HIGH);
+void refreshToRoot() {
+  client.print("<HEAD>");
+  client.print("<meta http-equiv=\"refresh\" content=\"0;url=/\">");
+  client.print("</head>");
 }
 
-void handle_OnConnectHelp() {
+void handleClientConnection() {
 
+  unsigned long currentTime;
+  unsigned long previousTime;
+  currentTime = millis();
+  previousTime = currentTime;
+
+  String currentLine = "";                      // incoming HTML request
+  bool mobileDevice = false;
+
+  // loop while the client's connected
+  while (client.connected() && currentTime - previousTime <= connectionKeepAlive) {
+    currentTime = millis();
+
+    if (client.available()) {                   // if there's bytes to read from the client,
+      char c = client.read();                   // read a byte
+      // Serial.write(c);                       // print it to the serial monitor
+      httpHeader += c;
+      if (c == '\n') {                          // if the byte is a newline character
+        // if the current line is blank, you got two newline characters in a row.
+        // that's the end of the client HTTP request, so send a response:
+
+        if (currentLine.length() == 0) {
+          // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
+          // and a content-type so the client knows what's coming, then a blank line:
+          client.println("HTTP/1.1 200 OK");
+          client.println("Content-type:text/html");
+          client.println("Connection: close");
+          client.println();
+
+          // Handle requests
+          if (httpHeader.indexOf("GET /autoWhite") >= 0) {
+            Serial.println("autoWhite");
+            autoWhite = !autoWhite;
+            refreshToRoot();
+          }
+          else if (httpHeader.indexOf("GET /manualWhite") >= 0) {
+            Serial.println("manualWhite");
+            manualWhite = !manualWhite;
+            refreshToRoot();
+          }
+          else if (httpHeader.indexOf("GET /autoGreen") >= 0) {
+            Serial.println("autoGreen");
+            autoGreen = !autoGreen;
+            refreshToRoot();
+          }
+          else if (httpHeader.indexOf("GET /manualGreen") >= 0) {
+            Serial.println("manualGreen");
+            manualGreen = !manualGreen;
+            refreshToRoot();
+          }
+          else if (httpHeader.indexOf("GET /autoWater") >= 0) {
+            Serial.println("autoWater");
+            autoWater = !autoWater;
+            refreshToRoot();
+          }
+          else if (httpHeader.indexOf("GET /manualWater") >= 0) {
+            Serial.println("manualWater");
+            manualWater = !manualWater;
+            refreshToRoot();
+          }
+          else if (httpHeader.indexOf("GET /settings") >= 0) {
+            // Send HTML web page
+            client.println("<!DOCTYPE html><html>");
+            // client.println("<meta http-equiv=\"refresh\" content=\"15\" >\n");
+            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+            client.println("<link rel=\"icon\" href=\"data:,\">");
+            client.println("<title>Smart Balcony</title>");
+            // CSS styling
+            client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}");
+            // client.println("body{margin-top: 50px;} h1 {color: #B4F9F3;margin: 50px auto 30px;}");
+            client.println("body {color: white; background: black;}");
+            // client.println(".button { background-color: #195B6A; border: none; color: white; padding: 16px 50px;");
+            client.println(".button { background-color: #195B6A; border: none; color: white; height: 50px; width: 130px;");
+            client.println("text-decoration: none; text-align: center; font-size: 30px; margin: 2px; cursor: pointer;}");
+            client.println(".button3 {background-color: #ff3300;}");
+            client.println(".button2 {background-color: #77878A;}</style></head>");
+
+            client.println("<body><h1>Smart Balcony</h1>");
+            client.println("<h2>Settings page</h2>");
+            client.println("<p></p>");
+            // break;
+          }
+          else if (httpHeader.indexOf("GET /debug") >= 0) {
+            // Send HTML web page
+            client.println("<!DOCTYPE html><html>");
+            client.println("<meta http-equiv=\"refresh\" content=\"5\" >\n");
+            client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+            client.println("<link rel=\"icon\" href=\"data:,\">");
+            client.println("<title>Smart Balcony</title>");
+            // CSS styling
+            client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}");
+            // client.println("body{margin-top: 50px;} h1 {color: #B4F9F3;margin: 50px auto 30px;}");
+            client.println("body {color: white; background: black;}");
+            // client.println(".button { background-color: #195B6A; border: none; color: white; padding: 16px 50px;");
+            client.println(".button { background-color: #195B6A; border: none; color: white; height: 50px; width: 130px;");
+            client.println("text-decoration: none; text-align: center; font-size: 30px; margin: 2px; cursor: pointer;}");
+            client.println(".button3 {background-color: #ff3300;}");
+            client.println(".button2 {background-color: #77878A;}</style></head>");
+
+            client.println("<body><h1>Smart Balcony</h1>");
+            client.println("<body><h2>Debugging Page (auto refresh: 5\")</h2>");
+            client.println("<p></p>");
+
+            client.println("<table style=\"margin-left:auto;margin-right:auto;\">");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> SENSORS </td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>SHT3x OK:</td>");
+            client.println("<td>" + String(sht3xAvailable) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>BH1750 OK:</td>");
+            client.println("<td>" + String(bh1750Available) + "</td>");
+            client.println("</tr>");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> </td>");
+            client.println("</tr>");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> INPUTS </td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>Temperature:</td>");
+            client.println("<td>" + String(temperature) + " &#176C</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>Humidity:</td>");
+            client.println("<td>" + String(humidity) + " %</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>Luminosity:</td>");
+            client.println("<td>" + String(luminosity) + " lux</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>Movement:</td>");
+            String tempMove;
+            if (movementFlag) {
+              tempMove = "yes";
+            }
+            else {
+              tempMove = "no";
+            }
+            client.println("<td>" + tempMove  + "</td>");
+            client.println("</tr>");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> </td>");
+            client.println("</tr>");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> NETWORK </td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>SSID:</td>");
+            client.println("<td>" + wifiSSID + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>Signal:</td>");
+            client.println("<td>" + wifiSignal + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>Local IP:</td>");
+            client.println("<td>" + localIPaddress + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>MAC:</td>");
+            client.println("<td>" + macAddr + "</td>");
+            client.println("</tr>");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> </td>");
+            client.println("</tr>");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> RUNTIME </td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>Time:</td>");
+            client.println("<td>" + formatedTime + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>millis():</td>");
+            client.println("<td>" + String(millis()) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>PIR_IN:</td>");
+            client.println("<td>" + String(digitalRead(BUILTIN_LED)) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>BTN_IN:</td>");
+            client.println("<td>" + String(analogValue) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>RELAY_W:</td>");
+            short tmpRL;
+            tmpRL = map(digitalRead(RELAY_W), 0, 1, 1, 0);
+            client.println("<td>" + String(tmpRL) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>RELAY_G:</td>");
+            tmpRL = map(digitalRead(RELAY_G), 0, 1, 1, 0);
+            client.println("<td>" + String(tmpRL) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>RELAY_WT:</td>");
+            tmpRL = map(digitalRead(RELAY_WT), 0, 1, 1, 0);
+            client.println("<td>" + String(tmpRL) + "</td>");
+            client.println("</tr>");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> </td>");
+            client.println("</tr>");
+            client.println("<tr>");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> FLAGS </td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>manualWhite:</td>");
+            client.println("<td>" + String(manualWhite) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>autoWhite:</td>");
+            client.println("<td>" + String(autoWhite) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>manualGreen:</td>");
+            client.println("<td>" + String(manualGreen) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>autoGreen:</td>");
+            client.println("<td>" + String(autoGreen) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>manualWater:</td>");
+            client.println("<td>" + String(manualWater) + "</td>");
+            client.println("</tr>");
+            client.println("<tr>");
+            client.println("<td>autoWater:</td>");
+            client.println("<td>" + String(autoWater) + "</td>");
+            client.println("</tr>");
+
+            client.println("<tr>");
+            client.println("<td colspan=\"2\"> </td>");
+            client.println("</tr>");
+            client.println("<tr>");
+
+            client.println("</table>");
+            client.println("<p></p>");
+            client.println("<p></p>");
+            client.println("<div><label for=\"debugging\">" + httpHeader + "</label></div>");
+            client.println("<p></p>");
+            client.println("<p></p>");
+
+            client.println("<table style=\"margin-left:auto;margin-right:auto;\">");
+            client.println("<tr>");
+            client.println("<td><p><a href=\"/\"><button class=\"button\">back</button></a></p></td>");
+            client.println("</tr>");
+            client.println("</table>");
+
+            client.println("<p></p>");
+            client.println("</body></html>");
+
+            // The HTTP response ends with another blank line
+            client.println();
+            break;
+          }
+          else if (httpHeader.indexOf("GET /restart") >= 0) {
+            refreshToRoot();
+            delay(200);
+            ESP.restart();
+          }
+
+          if (httpHeader.indexOf("Android") >= 0) {
+            Serial.println("Mobile device detected");
+            mobileDevice = true;
+          }
+
+          // Send HTML web page
+          client.println("<!DOCTYPE html><html>");
+          client.println("<meta http-equiv=\"refresh\" content=\"15\" >\n");
+          client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
+          client.println("<link rel=\"icon\" href=\"data:,\">");
+          client.println("<title>Smart Balcony</title>");
+          // CSS styling
+          client.println("<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}");
+          // client.println("body{margin-top: 50px;} h1 {color: #B4F9F3;margin: 50px auto 30px;}");
+          client.println("body {color: white; background: black;}");
+          // client.println(".button { background-color: #195B6A; border: none; color: white; padding: 16px 50px;");
+          client.println(".button { background-color: #195B6A; border: none; color: white; height: 50px; width: 130px;");
+          client.println("text-decoration: none; text-align: center; font-size: 30px; margin: 2px; cursor: pointer;}");
+          client.println(".button3 {background-color: #ff3300;}");
+          client.println(".button2 {background-color: #77878A;}</style></head>");
+
+          client.println("<body><h1>Smart Balcony</h1>");
+          client.println("<p></p>");
+
+          client.println("<p><h3>" + formatedTime + "</h3></p>");
+          client.println("<p></p>");
+
+          client.println("<table style=\"margin-left:auto;margin-right:auto;\">");
+
+          client.println("<tr>");
+          client.println("<td>Temperature:</td>");
+          client.println("<td colspan=\"2\">" + String(temperature) + " &#176C</td>");
+          client.println("</tr>");
+
+          client.println("<tr>");
+          client.println("<td>Humidity:</td>");
+          client.println("<td colspan=\"2\">" + String(humidity) + " %</td>");
+          client.println("</tr>");
+
+          client.println("<tr>");
+          client.println("<td>Luminosity:</td>");
+          client.println("<td colspan=\"2\">" + String(luminosity) + " lux</td>");
+          client.println("</tr>");
+
+          client.println("<tr>");
+          client.println("<td>Movement:</td>");
+          String tempMove;
+          if (movementFlag) {
+              tempMove = "yes";
+            }
+            else {
+              tempMove = "no";
+            }
+          client.println("<td colspan=\"2\">" + tempMove  + "</td>");
+          client.println("</tr>");
+
+          client.println("<tr>");
+          client.println("<td>");
+          client.println("</td>");
+          client.println("</tr>");
+
+          client.println("<tr>");
+          client.println("<td>White lamp</td>");
+          if (autoWhite) {
+            client.println("<td><p><a href=\"/autoWhite\"><button class=\"button\">Auto</button></a></p></td>");
+          } else {
+            client.println("<td><p><a href=\"/autoWhite\"><button class=\"button button2\">Auto</button></a></p></td>");
+          }
+          if (manualWhite) {
+            client.println("<td><p><a href=\"/manualWhite\"><button class=\"button\">ON</button></a></p></td>");
+          } else {
+            client.println("<td><p><a href=\"/manualWhite\"><button class=\"button button2\">OFF</button></a></p></td>");
+          }
+          client.println("</tr>");
+
+          client.println("<tr>");
+          client.println("<td>Green lamp</td>");
+          if (autoGreen) {
+            client.println("<td><p><a href=\"/autoGreen\"><button class=\"button\">Auto</button></a></p></td>");
+          } else {
+            client.println("<td><p><a href=\"/autoGreen\"><button class=\"button button2\">Auto</button></a></p></td>");
+          }
+          if (manualGreen) {
+            client.println("<td><p><a href=\"/manualGreen\"><button class=\"button\">ON</button></a></p></td>");
+          } else {
+            client.println("<td><p><a href=\"/manualGreen\"><button class=\"button button2\">OFF</button></a></p></td>");
+          }
+          client.println("</tr>");
+
+          client.println("<tr>");
+          client.println("<td>Watering system</td>");
+          if (autoWater) {
+            client.println("<td><p><a href=\"/autoWater\"><button class=\"button\">Auto</button></a></p></td>");
+          } else {
+            client.println("<td><p><a href=\"/autoWater\"><button class=\"button button2\">Auto</button></a></p></td>");
+          }
+          if (manualWater) {
+            client.println("<td><p><a href=\"/manualWater\"><button class=\"button\">ON</button></a></p></td>");
+          } else {
+            client.println("<td><p><a href=\"/manualWater\"><button class=\"button button2\">OFF</button></a></p></td>");
+          }
+          client.println("</tr>");
+          client.println("</table>");
+          client.println("<p></p>");
+          // client.println("<p><input type=\"checkbox\" name=\"autoRefresh\" value=\"AutoRefresh\" checked> Auto refresh ?</p>");
+          // client.println("<p></p>");
+
+          if (mobileDevice) {
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/1?average=10&bgcolor=%232E2E2E&color=%23d62020&dynamic=true&results=288&round=1&title=Temperature+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/2?average=10&bgcolor=%232E2E2E&color=%232020d6&dynamic=true&results=288&round=1&title=Humidity+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/3?average=10&bgcolor=%232E2E2E&color=%23d6d620&dynamic=true&results=288&round=0&title=Luminosity+%2810%27+average%29&type=spline\"></iframe></p>");
+          } else {
+            client.println("<table style=\"margin-left:auto;margin-right:auto;\">");
+            client.println("<tr>");
+            client.println("<td>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/1?average=10&bgcolor=%232E2E2E&color=%23d62020&dynamic=true&results=288&round=1&title=Temperature+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("</td>");
+            client.println("<td>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/2?average=10&bgcolor=%232E2E2E&color=%232020d6&dynamic=true&results=288&round=1&title=Humidity+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("</td>");
+            client.println("<td>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/3?average=10&bgcolor=%232E2E2E&color=%23d6d620&dynamic=true&results=288&round=0&title=Luminosity+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("</td>");
+            client.println("</tr>");
+            client.println("</table>");
+          }
+
+          client.println("<p></p>");
+          client.println("</body></html>");
+
+          client.println();     // HTTP response ends with a blank line
+          break;
+        }
+        else {                  // if new content --> clear 'currentLine'
+          currentLine = "";
+        }
+      }
+      else if (c != '\r') {     // any input BUT a '\r' --> append it to 'currentLine'
+        currentLine += c;
+      }
+    }
+  }
 }
 
-void handle_NotFound() {
-  server.send(404, "text/html", HTMLnotFound());
-}
-
-// HTML page structure
-String HTMLpresentData() {
-  String ptr = "<!DOCTYPE html> <html>\n";
-  ptr +="<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
-  ptr +="<title>RJD Monitor</title>\n";
-  ptr +="<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
-  ptr +="body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;}\n";
-  ptr +="p {font-size: 24px;color: #444444;margin-bottom: 10px;}\n";
-  ptr +="</style>\n";
-  ptr +="</head>\n";
-  ptr +="<body>\n";
-  ptr +="<div id=\"webpage\">\n";
-  ptr +="<h1>RJD Monitor</h1>\n";
-  
-  ptr +="<p>Local IP: ";
-  ptr += (String)localIPaddress;
-  ptr +="</p>";
-
-  ptr +="<p>Temperature: ";
-  ptr +=(String)temperature;
-  ptr +="&#176C</p>"; // '°' is '&#176' in HTML
-  ptr +="<p>Humidity: ";
-  ptr +=(String)humidity;
-  ptr +="%</p>";
-  ptr +="<p>IR sensor: ";
-  ptr +=(String)luminosity;
-  ptr +="%</p>";
-  ptr += "<p>Timestamp: ";
-  ptr +=(String)formatedTime;
-  ptr += "</p>";
-
-  // ptr +="<p>Last recorder temp: ";
-  // ptr +=(String)lastRecorderTemp;
-  // ptr +="&#176C</p>";
-  
-  ptr +="</div>\n";
-  ptr +="</body>\n";
-  ptr +="</html>\n";
-  return ptr;
-}
-
-String HTMLnotFound() {
-  String ptr = "<!DOCTYPE html> <html>\n";
-  ptr +="<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
-  ptr +="<title>RJD Monitor</title>\n";
-  ptr +="<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: left;}\n";
-  ptr +="body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;}\n";
-  ptr +="p {font-size: 24px;color: #444444;margin-bottom: 10px;}\n";
-  ptr +="</style>\n";
-  ptr +="</head>\n";
-  ptr +="<body>\n";
-  ptr +="<div id=\"webpage\">\n";
-  ptr +="<h1>You know this 404 thing ?</h1>\n";
-  ptr +="<p>What you asked can not be found... :'( </p>";
-  ptr +="</div>\n";
-  ptr +="</body>\n";
-  ptr +="</html>\n";
-  return ptr;
-}
-
-
-// Read all sensors
 void getSensorData() {
-  temperature = dht.readTemperature();
-  humidity = dht.readHumidity();
-  luminosity = analogRead(ANLG_IN);
-  luminosity = map(luminosity, 0, 1024, 1024, 0);
+  if (sht3xAvailable) {
+    humidity = sht31.readHumidity();
+    temperature = sht31.readTemperature();
+  }
+  else {
+    humidity = NULL;
+    temperature = NULL;
+    // humidity = -1;
+    // temperature = -1;
+  }
+  if (isnan(humidity) || isnan(temperature)) {
+    humidity = NULL;
+    temperature = NULL;
+  }
+
+  if (bh1750Available) {
+    luminosity = lightMeter.readLightLevel();
+  }
+  else {
+    luminosity = NULL;
+    // luminosity = -1;
+  }
 }
 
-// Get the time
 void pullNTPtime(bool printData) {
   timeClient.update();
   formatedTime = timeClient.getFormattedTime();
@@ -307,87 +707,184 @@ void pullNTPtime(bool printData) {
     // Serial.print(timeClient.getMinutes());
     // Serial.print(":");
     // Serial.println(timeClient.getSeconds());
-    Serial.println(timeClient.getFormattedTime()); // format time like 23:05:00
+    Serial.println(timeClient.getFormattedTime());        // format time HH:MM:SS (23:05:00)
   }
+  lastNTPtime = millis();
 }
 
-// Serial print data      // <?><?><?><?><?><?><?><?>
 void serialPrintAll() {
+  Serial.println();
   Serial.println(timeClient.getFormattedTime());
   Serial.print("Temperature: ");
   Serial.print(String(temperature));
-  Serial.println("°C");
+  Serial.println(" °C");
   Serial.print("Humidity: ");
   Serial.print(String(humidity));
-  Serial.println("%");
+  Serial.println(" %");
+  Serial.print("Luminosity: ");
+  Serial.print(luminosity);
+  Serial.println(" lux");
+  Serial.print("Movement: ");
+  Serial.print(movementFlag);
+  Serial.println(" [T/F]");
   Serial.println();
+}
+
+void ledBlinker(short blinks) {
+  if ((millis() > lastLEDblinkTime + ledBlinkInterval) && blinks > 0) {
+    pinMode(BUILTIN_LED, OUTPUT);
+    // for (int flashed=0; flashed<blinks; flashed++ ) {
+    //   delay(10);
+    //   digitalWrite(BUILTIN_LED, LOW);
+    //   delay(20);
+    //   digitalWrite(BUILTIN_LED, HIGH);
+    //   delay(40);
+    // }
+
+    short flashed = 0;
+    do {
+      delay(10);
+      digitalWrite(BUILTIN_LED, LOW);
+      delay(20);
+      digitalWrite(BUILTIN_LED, HIGH);
+      delay(40);
+      flashed += 1;
+    } while (flashed < blinks);
+
+    pinMode(BUILTIN_LED, INPUT);
+    lastLEDblinkTime = millis();
+  }
 }
 
 
 void loop(){
 
-  if (millis() > lastSensorsTime + sensorsInterval) {
-    if (debuggingMode) { Serial.println("Reading sensor data..."); }
-    getSensorData();
-    lastSensorsTime = millis();
-  }
+  ArduinoOTA.handle();
 
-  if (millis() > lastNTPtime + ntpInterval) {
-    if (debuggingMode) { Serial.println("Pulling NTP..."); }
-    if (wifiAvailable) {
-      pullNTPtime(false);
-      lastNTPtime = millis();
+  // ~~~~~~ REBOOT DEVICE IF NO WiFi FOR 15' (900000 ms) (1h : 3600000) ~~~~~~~
+  // check connection every 30"
+  if (millis() > lastWiFiCheckTime + 30000) {
+    if (WiFi.status() != WL_CONNECTED) {
+      wifiAvailable = false;
+      lastWiFiLostTime = millis();
+      Serial.println("[ERROR] WiFi connection lost");
     }
     else {
-      if (debuggingMode) { Serial.println("No WiFi! Pulling NTP canceled!"); }
+      wifiAvailable = true;
+    }
+    lastWiFiCheckTime = millis();
+  }
+  if ((!wifiAvailable) && (millis() > lastWiFiLostTime + 900000)) {
+    Serial.println("[ERROR] no WiFi for 15 min. Reconnecting ...");
+    delay(100);
+    WiFi.disconnect();
+    WiFi.reconnect();
+    delay(5000);
+
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("[ERROR] WiFi reconnection failled. Rebooting ...");
+      ESP.restart();
     }
   }
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  if (digitalRead(PIR_IN)) {
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~ READ SENSORS AND INPUTS ~~~~~~~~~~~~~~~~~~~~~~~~~
+  if (millis() > lastSensorsTime + sensorsInterval) {
+    // Serial.println("[INFO] reading sensor data...");
+    getSensorData();
+    lastSensorsTime = millis();
+    serialPrintAll();
+  }
+
+  // used for PIR_IN
+  if (digitalRead(BUILTIN_LED)) {
+    movementFlag = false;
+  }
+  else {
     movementFlag = true;
   }
 
-  if (millis() > lastUploadTime + thingSpeakInterval) {
-    if (debuggingMode) { Serial.println("Uploading to thingspeak..."); }
-    if (wifiAvailable) {
+  if (millis() > lastAnalogTime + analogReadInterval) {
+    // Serial.println("[INFO] reading analog input...");
+    analogValue = analogRead(BTN_IN);
+    analogValue = map(analogValue, 0, 1024, 1024, 0);
+    lastAnalogTime = millis();
+
+    if (analogValue <= 300) {         // btn_1  (214)
+      // Serial.println("[DEBUG] BTN_1 pressed");
+      manualWhite = !manualWhite;
+    }
+    else if (analogValue <= 550) {    // btn_2  (480)
+      // Serial.println("[DEBUG] BTN_2 pressed");
+      manualGreen = !manualGreen;
+    }
+    else if (analogValue <= 850) {    // btn_3  (747)
+      // Serial.println("[DEBUG] BTN_3 pressed");
+      manualWater = !manualWater;
+    }
+  }
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ RELAY HANDLER ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  if (manualWhite || (autoWhite && movementFlag)) {
+    digitalWrite(RELAY_W, LOW);
+  }
+  else {
+    digitalWrite(RELAY_W, HIGH);
+  }
+
+  if (manualGreen) {
+    digitalWrite(RELAY_G, LOW);
+  }
+  else {
+    digitalWrite(RELAY_G, HIGH);
+  }
+
+  if (manualWater) {
+    digitalWrite(RELAY_WT, LOW);
+  }
+  else {
+    digitalWrite(RELAY_WT, HIGH);
+  }
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ LED HANDLER ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  if (!wifiAvailable) {
+    ledBlinker(3);
+    ledBlinkInterval = 1000;
+  }
+  else if (manualWater) {
+    ledBlinker(3);
+    ledBlinkInterval = 3000;
+  }
+  else {
+    ledBlinker(1);
+    ledBlinkInterval = 5000;
+  }
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~ NTP - THINGSPEAK - SERVER ~~~~~~~~~~~~~~~~~~~~~~~~
+  if (wifiAvailable) {
+    if (millis() > lastNTPtime + ntpInterval) {
+      pullNTPtime(false);
+    }
+
+    if (millis() > lastUploadTime + thingSpeakInterval) {
       thingSpeakRequest();
     }
-    else {
-      if (debuggingMode) { Serial.println("No WiFi! Uploading to thingspeak canceled!"); }
+
+    client = server.available();
+
+    if (client) {
+      handleClientConnection();
+
+      httpHeader = "";
+      client.stop();
     }
   }
-
-  // check Internet connectivity
-  if (millis() > lastPingTime + pingInteval) {
-      pingResult = pingStatus();
-      Serial.print("\r\nPing status: ");
-      Serial.println((String)pingResult);
-      Serial.println("\r\n");
-
-      connectionLost = !pingResult;
-
-      if ((!pingResult) && (!connectionLost)) {
-          Serial.println("\r\nWARNING: no Internet connectivity!\r\n");
-          connectionLostTime = millis();
-          connectionLost = true;
-      }
-  }
-
-  // reboot if no Internet
-  if ((millis() > connectionLostTime + 300000) && connectionLost) {
-      if (!pingResult) {
-          Serial.println("No Internet connection. Rebooting in 5 sec...");
-          delay(5000);
-          ESP.restart();
-      }
-  }
-
-  // reboot device if no WiFi for 5 minutes (1h : 3600000)
-  if ((millis() > 300000) && (!wifiAvailable)) {
-      Serial.println("No WiFi connection. Rebooting in 5 sec...");
-      delay(5000);
-      ESP.restart();
-  }
-
-  server.handleClient();
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 }
