@@ -218,10 +218,10 @@ void thingSpeakRequest() {
       postStr +="&field3=";
       postStr += String(luminosity);
     }
-    if (movementFlag != NULL) {
-      postStr +="&field4=";
-      postStr += String(movementFlag);
-    }
+    // if (movementFlag != NULL) {
+    //   postStr +="&field4=";
+    //   postStr += String(movementFlag);
+    // }
     postStr += "\r\n\r\n";
 
     clientThSp.print("POST /update HTTP/1.1\n");
@@ -437,12 +437,17 @@ void handleClientConnection() {
             client.println("<td>millis():</td>");
             client.println("<td>" + String(millis()) + "</td>");
             client.println("</tr>");
-            float tempUpMin;
-            tempUpMin = (float)(millis() / 1000.0) / 60.0;
             client.println("<tr>");
             client.println("<td>Up time (millis):</td><td>");
-            client.println(tempUpMin,1);
-            client.println("'</td></tr>");
+            client.println(millisToTime(true));
+            // if (millis() >= 86400000) {                           // more than one day
+            //   client.println(millisToTime(true));
+            // }
+            // else {
+            //   client.println(millisToTime(false));
+            // }
+            // client.println(tempUpMin,1);
+            client.println("</td></tr>");
             client.println("<tr>");
             client.println("<td>PIR_IN:</td>");
             client.println("<td>" + String(digitalRead(BUILTIN_LED)) + "</td>");
@@ -516,6 +521,7 @@ void handleClientConnection() {
             client.println("<table style=\"margin-left:auto;margin-right:auto;\">");
             client.println("<tr>");
             client.println("<td><p><a href=\"/\"><button class=\"button\">back</button></a></p></td>");
+            client.println("<td><p><a href=\"/restart\"><button class=\"button button3\">RESTART</button></a></p></td>");
             client.println("</tr>");
             client.println("</table>");
 
@@ -528,7 +534,7 @@ void handleClientConnection() {
           }
           else if (httpHeader.indexOf("GET /restart") >= 0) {
             refreshToRoot();
-            delay(200);
+            delay(1000);
             ESP.restart();
           }
 
@@ -674,6 +680,7 @@ void handleClientConnection() {
       }
     }
   }
+  httpHeader = "";
 }
 
 void getSensorData() {
@@ -704,6 +711,7 @@ void getSensorData() {
 void pullNTPtime(bool printData) {
   timeClient.update();
   formatedTime = timeClient.getFormattedTime();
+  // dayToday = daysOfTheWeek[timeClient.getDay()];
 
   if (printData) {
     // Serial.print(daysOfTheWeek[timeClient.getDay()]);
@@ -755,6 +763,35 @@ void ledBlinker(short blinks) {
   }
 }
 
+String millisToTime(bool calcDays) {
+
+  String outString;
+  // String strUpTime;
+  // String strUpDaysTime;
+
+  short millisSeconds = millis() / 1000;
+
+  short seconds = millisSeconds % 60;
+
+  millisSeconds = (millisSeconds - seconds) / 60;
+  short minutes = millisSeconds % 60;
+
+  millisSeconds = (millisSeconds - minutes) / 60;
+  short hours = millisSeconds % 24;
+
+  short days = (millisSeconds - hours) / 24;
+
+  if (calcDays) {
+    // output:  1d 3h 42' 4"  (d H M S)
+    outString = String(days) + "d " + String(hours) + "h " + String(minutes) + "' " + String(seconds) + "\"";
+  }
+  else {
+    // output:  3:42:4        (H:M:S)
+    outString = String(hours) + ":" + String(minutes) + ":" + String(seconds);
+  }
+
+  return outString;
+}
 
 void loop(){
 
@@ -879,9 +916,9 @@ void loop(){
     client = server.available();
 
     if (client) {
+      // clientsHandler();        // test on '.webpageHandler.cpp'
       handleClientConnection();
-
-      httpHeader = "";
+      // httpHeader = "";
       client.stop();
     }
   }
