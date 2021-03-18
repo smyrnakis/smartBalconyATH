@@ -49,10 +49,10 @@ bool sht3xAvailable = false;
 bool bh1750Available = false;
 
 int analogValue;
+int luminosity;
 float humidity;
 float temperature;
 bool movementFlag;
-uint16_t luminosity;
 
 unsigned long lastAnalogTime = 0;
 unsigned long lastNTPtime = 0;
@@ -206,19 +206,19 @@ void thingSpeakRequest() {
   clientThSp.stop();
   if (clientThSp.connect(thinkSpeakAPI,80)) {
     String postStr = apiKey;
-    if (temperature != NULL) {
+    if (temperature != -100) {
       postStr +="&field1=";
       postStr += String(temperature);
     }
-    if (humidity != NULL) {
+    if (humidity != -100) {
       postStr +="&field2=";
       postStr += String(humidity);
     }
-    if (luminosity != NULL) {
+    if (luminosity != -100) {
       postStr +="&field3=";
       postStr += String(luminosity);
     }
-    // if (movementFlag != NULL) {
+    // if (movementFlag != -100) {
     //   postStr +="&field4=";
     //   postStr += String(movementFlag);
     // }
@@ -569,17 +569,32 @@ void handleClientConnection() {
 
           client.println("<tr>");
           client.println("<td>Temperature:</td>");
-          client.println("<td colspan=\"2\">" + String(temperature) + " &#176C</td>");
+          if (temperature != -100) {
+            client.println("<td colspan=\"2\">" + String(temperature) + " &#176C</td>");
+          }
+          else {
+            client.println("<td colspan=\"2\"><i>ERROR</i></td>");
+          }
           client.println("</tr>");
 
           client.println("<tr>");
           client.println("<td>Humidity:</td>");
-          client.println("<td colspan=\"2\">" + String(humidity) + " %</td>");
+          if (humidity != -100) {
+            client.println("<td colspan=\"2\">" + String(humidity) + " %</td>");
+          }
+          else {
+            client.println("<td colspan=\"2\"><i>ERROR</i></td>");
+          }
           client.println("</tr>");
 
           client.println("<tr>");
           client.println("<td>Luminosity:</td>");
-          client.println("<td colspan=\"2\">" + String(luminosity) + " lux</td>");
+          if (luminosity != -100) {
+            client.println("<td colspan=\"2\">" + String(luminosity) + " lux</td>");
+          }
+          else {
+            client.println("<td colspan=\"2\"><i>ERROR</i></td>");
+          }
           client.println("</tr>");
 
           client.println("<tr>");
@@ -689,22 +704,19 @@ void getSensorData() {
     temperature = sht31.readTemperature();
   }
   else {
-    humidity = NULL;
-    temperature = NULL;
-    // humidity = -1;
-    // temperature = -1;
+    humidity = -100;
+    temperature = -100;
   }
   if (isnan(humidity) || isnan(temperature)) {
-    humidity = NULL;
-    temperature = NULL;
+    humidity = -100;
+    temperature = -100;
   }
 
   if (bh1750Available) {
     luminosity = lightMeter.readLightLevel();
   }
   else {
-    luminosity = NULL;
-    // luminosity = -1;
+    luminosity = -100;
   }
 }
 
@@ -765,30 +777,44 @@ void ledBlinker(short blinks) {
 
 String millisToTime(bool calcDays) {
 
-  String outString;
-  // String strUpTime;
-  // String strUpDaysTime;
+  char outString[16];
+  // String outString;
 
-  short millisSeconds = millis() / 1000;
+  unsigned long millisecondsNow = millis();
+  unsigned long tempTime = millisecondsNow / 1000;
 
-  short seconds = millisSeconds % 60;
+  unsigned long seconds = tempTime % 60;
 
-  millisSeconds = (millisSeconds - seconds) / 60;
-  short minutes = millisSeconds % 60;
+  tempTime = (tempTime - seconds) / 60;
+  unsigned long minutes = tempTime % 60;
 
-  millisSeconds = (millisSeconds - minutes) / 60;
-  short hours = millisSeconds % 24;
+  tempTime = (tempTime - minutes) / 60;
+  unsigned long hours = tempTime % 24;
 
-  short days = (millisSeconds - hours) / 24;
+  unsigned long days = (tempTime - hours) / 24;
 
   if (calcDays) {
-    // output:  1d 3h 42' 4"  (d H M S)
-    outString = String(days) + "d " + String(hours) + "h " + String(minutes) + "' " + String(seconds) + "\"";
+    // output:  1d 03h 42' 04"  (d HH MM SS)
+    sprintf(outString, "%dd %02dh %02d' %02d\"", days,hours,minutes,seconds);
+    // outString = String(days) + "d " + String(hours) + "h " + String(minutes) + "' " + String(seconds) + "\"";
   }
   else {
-    // output:  3:42:4        (H:M:S)
-    outString = String(hours) + ":" + String(minutes) + ":" + String(seconds);
+    // output:  03:42:04        (HH:MM:SS)
+    sprintf(outString, "%02d:%02d:%02d" ,hours,minutes,seconds);
+    // outString = String(hours) + ":" + String(minutes) + ":" + String(seconds);
   }
+
+  // ~~~~~~~~~~ another algorithm ~~~~~~~~~~
+  // int day = n / (24 * 3600);
+
+  // n = n % (24 * 3600);
+  // int hour = n / 3600;
+
+  // n %= 3600;
+  // int minutes = n / 60 ;
+
+  // n %= 60;
+  // int seconds = n;
 
   return outString;
 }
