@@ -661,20 +661,20 @@ void handleClientConnection() {
           // client.println("<p></p>");
 
           if (mobileDevice) {
-            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/1?average=10&bgcolor=%232E2E2E&color=%23d62020&dynamic=true&results=288&round=1&title=Temperature+%2810%27+average%29&type=spline\"></iframe></p>");
-            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/2?average=10&bgcolor=%232E2E2E&color=%232020d6&dynamic=true&results=288&round=1&title=Humidity+%2810%27+average%29&type=spline\"></iframe></p>");
-            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/3?average=10&bgcolor=%232E2E2E&color=%23d6d620&dynamic=true&results=288&round=0&title=Luminosity+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/1?average=10&bgcolor=%232E2E2E&color=%23d62020&dynamic=true&results=144&round=1&title=Temperature+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/2?average=10&bgcolor=%232E2E2E&color=%232020d6&dynamic=true&results=144&round=1&title=Humidity+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/3?average=10&bgcolor=%232E2E2E&color=%23d6d620&dynamic=true&results=144&round=0&title=Luminosity+%2810%27+average%29&type=spline\"></iframe></p>");
           } else {
             client.println("<table style=\"margin-left:auto;margin-right:auto;\">");
             client.println("<tr>");
             client.println("<td>");
-            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/1?average=10&bgcolor=%232E2E2E&color=%23d62020&dynamic=true&results=288&round=1&title=Temperature+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/1?average=10&bgcolor=%232E2E2E&color=%23d62020&dynamic=true&results=144&round=1&title=Temperature+%2810%27+average%29&type=spline\"></iframe></p>");
             client.println("</td>");
             client.println("<td>");
-            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/2?average=10&bgcolor=%232E2E2E&color=%232020d6&dynamic=true&results=288&round=1&title=Humidity+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/2?average=10&bgcolor=%232E2E2E&color=%232020d6&dynamic=true&results=144&round=1&title=Humidity+%2810%27+average%29&type=spline\"></iframe></p>");
             client.println("</td>");
             client.println("<td>");
-            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/3?average=10&bgcolor=%232E2E2E&color=%23d6d620&dynamic=true&results=288&round=0&title=Luminosity+%2810%27+average%29&type=spline\"></iframe></p>");
+            client.println("<p><iframe width=\"450\" height=\"250\" style=\"border: 0px solid #cccccc;\" src=\"https://thingspeak.com/channels/943716/charts/3?average=10&bgcolor=%232E2E2E&color=%23d6d620&dynamic=true&results=144&round=0&title=Luminosity+%2810%27+average%29&type=spline\"></iframe></p>");
             client.println("</td>");
             client.println("</tr>");
             client.println("</table>");
@@ -778,7 +778,6 @@ void ledBlinker(short blinks) {
 String millisToTime(bool calcDays) {
 
   char outString[16];
-  // String outString;
 
   unsigned long millisecondsNow = millis();
   unsigned long tempTime = millisecondsNow / 1000;
@@ -793,28 +792,26 @@ String millisToTime(bool calcDays) {
 
   unsigned long days = (tempTime - hours) / 24;
 
-  if (calcDays) {
-    // output:  1d 03h 42' 04"  (d HH MM SS)
-    sprintf(outString, "%dd %02dh %02d' %02d\"", days,hours,minutes,seconds);
-    // outString = String(days) + "d " + String(hours) + "h " + String(minutes) + "' " + String(seconds) + "\"";
-  }
-  else {
-    // output:  03:42:04        (HH:MM:SS)
-    sprintf(outString, "%02d:%02d:%02d" ,hours,minutes,seconds);
-    // outString = String(hours) + ":" + String(minutes) + ":" + String(seconds);
-  }
-
   // ~~~~~~~~~~ another algorithm ~~~~~~~~~~
-  // int day = n / (24 * 3600);
+  // int days = n / (24 * 3600);
 
   // n = n % (24 * 3600);
-  // int hour = n / 3600;
+  // int hours = n / 3600;
 
   // n %= 3600;
   // int minutes = n / 60 ;
 
   // n %= 60;
   // int seconds = n;
+
+  if (calcDays) {
+    // output:  1d 03h 42' 04"  (d HH MM SS)
+    sprintf(outString, "%dd %02dh %02d' %02d\"", days,hours,minutes,seconds);
+  }
+  else {
+    // output:  03:42:04        (HH:MM:SS)
+    sprintf(outString, "%02d:%02d:%02d" ,hours,minutes,seconds);
+  }
 
   return outString;
 }
@@ -914,17 +911,19 @@ void loop(){
 
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ LED HANDLER ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  if (!wifiAvailable) {
-    ledBlinker(3);
-    ledBlinkInterval = 1000;
-  }
-  else if (manualWater) {
-    ledBlinker(3);
-    ledBlinkInterval = 3000;
-  }
-  else {
-    ledBlinker(1);
-    ledBlinkInterval = 5000;
+  if (!movementFlag) {                                  // only if NO PIR input
+    if (!wifiAvailable) {
+      ledBlinker(3);
+      ledBlinkInterval = 1000;
+    }
+    else if (manualWater) {
+      ledBlinker(3);
+      ledBlinkInterval = 3000;
+    }
+    else {
+      ledBlinker(1);
+      ledBlinkInterval = 5000;
+    }
   }
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
